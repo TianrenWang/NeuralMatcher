@@ -58,7 +58,7 @@ encoderLayerNames = ['encoder_layer{}'.format(i + 1) for i in range(FLAGS.layers
 
 
 def model_fn(features, labels, mode, params):
-    abstracts = features["abstracts"]
+    abstracts = tf.cast(features["abstracts"], tf.int32)
     titles = features["titles"]
     vocab_size = params['vocab_size'] + 2
 
@@ -175,14 +175,12 @@ def main(argv=None):
 
     language_train_input_fn = file_based_input_fn_builder(
         input_file="training",
-        sequence_length=FLAGS.seq_len,
         batch_size=FLAGS.batch_size,
         is_training=True,
         drop_remainder=True)
 
     language_eval_input_fn = file_based_input_fn_builder(
         input_file="testing",
-        sequence_length=FLAGS.seq_len,
         batch_size=1,
         is_training=False,
         drop_remainder=True)

@@ -26,10 +26,7 @@ def text_processor(data_path, title_max_len, abstract_max_len, vocab_level, proc
 
         data.close()
 
-    # print("Copying lines")
-    accumulate_samples(samples, "stem_cell_test.txt")
-    # print("Finished copying lines")
-    # print("Sampples: " + str(samples[0]))
+    accumulate_samples(samples, "stem_cell.txt")
 
     if not os.path.exists(processed_path + "/stem_cell.subwords"):
         print("Vocab file does not exist, making a new one.")
@@ -88,7 +85,7 @@ def text_processor(data_path, title_max_len, abstract_max_len, vocab_level, proc
                 encoded_title = encode(title)
                 encoded_abstract = encode(abstract)
 
-                if len(encoded_abstract) <= 510 and len(encoded_title) <= 60:
+                if len(encoded_abstract) <= abstract_max_len and len(encoded_title) <= title_max_len:
                     # abstract_lengths[len(encoded_abstract)] += 1
                     # title_lengths[len(encoded_title)] += 1
 

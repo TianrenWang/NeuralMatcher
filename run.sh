@@ -14,7 +14,7 @@ python3 estimator.py \
   --dropout=0.1 \
   --heads=8 \
   --abstract_len=512 \
-  --title_len=512 \
+  --title_len=60 \
   --batch_size=16 \
   --layers=4 \
   --depth=256 \
