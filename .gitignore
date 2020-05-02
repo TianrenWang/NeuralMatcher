@@ -1,0 +1,4 @@
+data/*
+encoded_data/*
+.idea/
+__pycache__/
