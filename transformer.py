@@ -460,7 +460,9 @@ def TED_generator(vocab_size, FLAGS):
         def call(self, inp, tar, training, enc_padding_mask, look_ahead_mask):
             enc_output, encoder_attention_weights = self.encoder(inp, training, enc_padding_mask)  # (batch_size, inp_seq_len, d_model)
 
-            dec_output, _ = self.decoder(tar, enc_output, training, look_ahead_mask, enc_padding_mask)
+            enc_output = tf.math.reduce_sum(enc_output, 1, True)
+
+            dec_output, _ = self.decoder(tar, enc_output, training, look_ahead_mask, None)
 
             final_output = self.final_layer(dec_output)  # (batch_size, tar_seq_len, target_vocab_size)
 

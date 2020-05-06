@@ -3,8 +3,6 @@ import tensorflow_datasets as tfds
 import tensorflow as tf
 from sklearn.utils import shuffle
 import os
-import pandas as pd
-import csv
 
 
 def create_int_feature(values):
