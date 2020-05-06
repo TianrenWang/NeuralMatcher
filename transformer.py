@@ -364,8 +364,11 @@ def TED_generator(vocab_size, FLAGS):
 
             self.dropout = tf.keras.layers.Dropout(rate)
 
+            self.lstm = tf.keras.layers.LSTM(int(d_model/2), dropout=FLAGS.dropout, return_sequences=True)
+            self.decompressor = tf.keras.layers.Bidirectional(self.lstm)
+
         def call(self, x, training, mask):
-            seq_len = tf.shape(x)[1]
+            seq_len = x.shape[1]
             encoder_attention_weights = []
 
             # adding embedding and position encoding.
@@ -378,6 +381,13 @@ def TED_generator(vocab_size, FLAGS):
             for i in range(self.num_layers):
                 x, encoder_attention_weight = self.enc_layers[i](x, training, mask)
                 encoder_attention_weights.append(encoder_attention_weight)
+
+            x = tf.math.reduce_sum(x, 1, True)
+            x = tf.tile(x, [1, int(seq_len//8), 1])
+            x += self.pos_encoding[:, :int(seq_len//8), :]
+            x = self.decompressor(x, training=training)
+
+            print("Encoder output: " + str(x))
 
             return x, encoder_attention_weights  # (batch_size, input_seq_len, d_model)
 
@@ -459,8 +469,6 @@ def TED_generator(vocab_size, FLAGS):
 
         def call(self, inp, tar, training, enc_padding_mask, look_ahead_mask):
             enc_output, encoder_attention_weights = self.encoder(inp, training, enc_padding_mask)  # (batch_size, inp_seq_len, d_model)
-
-            enc_output = tf.math.reduce_sum(enc_output, 1, True)
 
             dec_output, _ = self.decoder(tar, enc_output, training, look_ahead_mask, None)
 
