@@ -195,7 +195,8 @@ def main(argv=None):
             max_steps=FLAGS.train_steps)
 
         evalspec = tf.estimator.EvalSpec(
-            input_fn=language_eval_input_fn)
+            input_fn=language_eval_input_fn,
+            throttle_secs=7200)
 
         tf.estimator.train_and_evaluate(estimator, trainspec, evalspec)
 
