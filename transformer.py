@@ -382,7 +382,8 @@ def TED_generator(vocab_size, FLAGS):
                 x, encoder_attention_weight = self.enc_layers[i](x, training, mask)
                 encoder_attention_weights.append(encoder_attention_weight)
 
-            x = tf.math.reduce_sum(x, 1, True)
+            mask = tf.expand_dims(tf.squeeze(mask), -1)
+            x = tf.math.reduce_sum(x * mask, 1, True)
             x = tf.tile(x, [1, int(seq_len//8), 1])
             x += self.pos_encoding[:, :int(seq_len//8), :]
             x = self.decompressor(x, training=training)
