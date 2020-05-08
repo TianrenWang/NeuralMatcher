@@ -166,7 +166,7 @@ def main(argv=None):
 
     mirrored_strategy = tf.distribute.MirroredStrategy()
     config = tf.estimator.RunConfig(
-        train_distribute=mirrored_strategy, eval_distribute=mirrored_strategy)
+        train_distribute=mirrored_strategy, eval_distribute=mirrored_strategy, save_checkpoints_steps=10000)
 
     vocab_size, tokenizer = text_processor.text_processor(FLAGS.data_dir, FLAGS.title_len, FLAGS.abstract_len, FLAGS.vocab_level, "encoded_data")
 
