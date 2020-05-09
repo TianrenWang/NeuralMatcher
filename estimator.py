@@ -59,15 +59,23 @@ encoderLayerNames = ['encoder_layer{}'.format(i + 1) for i in range(FLAGS.layers
 
 def model_fn(features, labels, mode, params):
     abstracts = tf.cast(features["abstracts"], tf.int32)
-    titles = features["titles"]
+    titles = tf.cast(features["titles"], tf.int32)
     vocab_size = params['vocab_size'] + 2
 
     network = transformer.TED_generator(vocab_size, FLAGS)
 
-    padded_titles = tf.pad(titles, [[0,0], [0, FLAGS.abstract_len - FLAGS.title_len]])
-    reconstruction_sequences = tf.concat([abstracts, padded_titles], 0)
+    abstract_logits, abstract_encoder_out = network(abstracts, mode == tf.estimator.ModeKeys.TRAIN)
+    title_logits, title_encoder_out = network(titles, mode == tf.estimator.ModeKeys.TRAIN)
 
-    logits, encoder_attention_weights, encoder_out = network(reconstruction_sequences, mode == tf.estimator.ModeKeys.TRAIN)
+    matching_layer = tf.keras.Sequential([
+            tf.keras.layers.Dropout(FLAGS.dropout),
+            tf.keras.layers.Dense(FLAGS.depth, activation='relu'),
+            tf.keras.layers.Dropout(FLAGS.dropout),
+            tf.keras.layers.Dense(FLAGS.depth, activation='relu')
+        ])
+
+    abstract_match = matching_layer(abstract_encoder_out)
+    title_match = matching_layer(title_encoder_out)
 
     def lm_loss_function(real, pred):
         mask = tf.math.logical_not(tf.math.equal(real, 0))  # Every element that is NOT padded
@@ -80,20 +88,22 @@ def model_fn(features, labels, mode, params):
         return tf.reduce_mean(loss_)
 
     # Calculate the loss
-    loss = lm_loss_function(tf.slice(reconstruction_sequences, [0, 1], [-1, -1]), logits)
+    abstract_loss = lm_loss_function(tf.slice(abstracts, [0, 1], [-1, -1]), abstract_logits)
+    title_loss = lm_loss_function(tf.slice(titles, [0, 1], [-1, -1]), title_logits)
 
-    # Create a tensor named cross_entropy for logging purposes.
-    tf.identity(loss, name='loss')
-    tf.summary.scalar('loss', loss)
+    difference = tf.reduce_sum(tf.math.pow(abstract_match - title_match, 2), -1)
+    difference_loss = tf.reduce_mean(difference)
+
+    loss = abstract_loss + title_loss + difference_loss
 
     predictions = {
-        'original': reconstruction_sequences,
-        'prediction': tf.argmax(logits, 2),
-        'encoder_out': encoder_out
+        'original_title': titles,
+        'title_prediction': tf.argmax(title_logits, 2),
+        'encoded_title': title_encoder_out,
+        'original_abstract': abstracts,
+        'abstract_prediction': tf.argmax(abstract_logits, 2),
+        'encoded_abstract': abstract_encoder_out
     }
-
-    for i, weight in enumerate(encoder_attention_weights):
-        predictions["encoder_layer" + str(i + 1)] = weight
 
     if mode == tf.estimator.ModeKeys.PREDICT:
         export_outputs = {
@@ -205,15 +215,21 @@ def main(argv=None):
         print("Predicting")
         print("***************************************")
 
-        results = estimator.predict(input_fn=language_eval_input_fn, predict_keys=['prediction', 'original'])
+        results = estimator.predict(input_fn=language_eval_input_fn, predict_keys=['title_prediction', 'original_title',
+                                                                                   'abstract_prediction', 'original_abstract'])
 
         for i, result in enumerate(results):
             print("------------------------------------")
-            output_sentence = result['prediction']
-            input_sentence = result['original']
-            print("result: " + str(output_sentence))
-            print("decoded: " + str(tokenizer.decode([i for i in output_sentence if i < tokenizer.vocab_size])))
-            print("original: " + str(tokenizer.decode([i for i in input_sentence if i < tokenizer.vocab_size])))
+            output_title = result['title_prediction']
+            input_title = result['original_title']
+            print("result: " + str(output_title))
+            print("decoded: " + str(tokenizer.decode([i for i in output_title if i < tokenizer.vocab_size])))
+            print("original: " + str(tokenizer.decode([i for i in input_title if i < tokenizer.vocab_size])))
+            output_abstract = result['abstract_prediction']
+            input_abstract = result['original_abstract']
+            print("result: " + str(output_abstract))
+            print("decoded: " + str(tokenizer.decode([i for i in output_abstract if i < tokenizer.vocab_size])))
+            print("original: " + str(tokenizer.decode([i for i in input_abstract if i < tokenizer.vocab_size])))
 
             if i + 1 == FLAGS.predict_samples:
                 # for layerName in encoderLayerNames:
