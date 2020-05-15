@@ -14,22 +14,17 @@ def text_processor(data_path, title_max_len, abstract_max_len, vocab_level, proc
     samples = []
     dir_path = data_path
 
-    def accumulate_samples(sample_list, filename):
-        data = open(dir_path + filename, "r")
-        line = data.readline().capitalize()
+    if not tf.gfile.Exists(processed_path):
+        tf.gfile.MakeDirs(processed_path)
 
-        while line:
-            sample_list.append(str.encode(line[:-1]))
-            line = data.readline()
+    with tf.gfile.Open(dir_path + "/stem_cell.txt") as f:
+        for line in f:
+            line = line.capitalize()
+            samples.append(str.encode(line[:-1]))
 
-        data.close()
-
-    accumulate_samples(samples, "stem_cell.txt")
-
-    if not os.path.exists(processed_path + "/stem_cell.subwords"):
+    if not tf.gfile.Exists(processed_path + "/stem_cell.subwords"):
         print("Vocab file does not exist, making a new one.")
         tokenizer = get_tokenizer(samples, vocab_level)
-        os.mkdir(processed_path)
         tokenizer.save_to_file(processed_path + "/stem_cell")
     else:
         print("Found an existing vocab file, using this one.")
@@ -66,12 +61,9 @@ def text_processor(data_path, title_max_len, abstract_max_len, vocab_level, proc
     # abstract_lengths = [0] * 1000
     # title_lengths = [0] * 200
 
-    if not os.path.exists(processed_path):
-        os.makedirs(processed_path)
-
     def write_tfrecords(titles, abstracts, data_name):
         full_path = processed_path + "/" + data_name + ".tfrecords"
-        if not os.path.exists(full_path):
+        if not tf.gfile.Exists(full_path):
 
             writer = tf.io.TFRecordWriter(full_path)
             counter = 0

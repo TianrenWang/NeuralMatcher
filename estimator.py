@@ -5,7 +5,6 @@ from __future__ import print_function
 
 import tensorflow as tf
 import numpy as np
-import matplotlib.pyplot as plt
 
 import transformer
 import text_processor
@@ -17,6 +16,8 @@ flags.DEFINE_string("data_dir", default="data/",
       help="data directory")
 flags.DEFINE_string("model_dir", default="model/",
       help="directory of model")
+flags.DEFINE_string("encoded_data_dir", default="encoded_data/",
+      help="directory of tfrecords")
 flags.DEFINE_integer("train_steps", default=100000,
       help="number of training steps")
 flags.DEFINE_integer("vocab_level", default=15,
@@ -67,15 +68,15 @@ def model_fn(features, labels, mode, params):
     abstract_logits, abstract_encoder_out = network(abstracts, mode == tf.estimator.ModeKeys.TRAIN)
     title_logits, title_encoder_out = network(titles, mode == tf.estimator.ModeKeys.TRAIN)
 
-    matching_layer = tf.keras.Sequential([
-            tf.keras.layers.Dropout(FLAGS.dropout),
-            tf.keras.layers.Dense(FLAGS.depth, activation='relu'),
-            tf.keras.layers.Dropout(FLAGS.dropout),
-            tf.keras.layers.Dense(FLAGS.depth, activation='relu')
-        ])
-
-    abstract_match = matching_layer(abstract_encoder_out)
-    title_match = matching_layer(title_encoder_out)
+    # matching_layer = tf.keras.Sequential([
+    #         tf.keras.layers.Dropout(FLAGS.dropout),
+    #         tf.keras.layers.Dense(FLAGS.depth, activation='relu'),
+    #         tf.keras.layers.Dropout(FLAGS.dropout),
+    #         tf.keras.layers.Dense(FLAGS.depth, activation='relu')
+    #     ])
+    #
+    # abstract_match = matching_layer(abstract_encoder_out)
+    # title_match = matching_layer(title_encoder_out)
 
     def lm_loss_function(real, pred):
         mask = tf.math.logical_not(tf.math.equal(real, 0))  # Every element that is NOT padded
@@ -91,10 +92,10 @@ def model_fn(features, labels, mode, params):
     abstract_loss = lm_loss_function(tf.slice(abstracts, [0, 1], [-1, -1]), abstract_logits)
     title_loss = lm_loss_function(tf.slice(titles, [0, 1], [-1, -1]), title_logits)
 
-    difference = tf.reduce_sum(tf.math.pow(abstract_match - title_match, 2), -1)
-    difference_loss = tf.reduce_mean(difference)
+    # difference = tf.reduce_sum(tf.math.pow(abstract_match - title_match, 2), -1)
+    # difference_loss = tf.reduce_mean(difference)
 
-    loss = abstract_loss + title_loss + difference_loss
+    loss = abstract_loss + title_loss# + difference_loss
 
     predictions = {
         'original_title': titles,
@@ -155,7 +156,7 @@ def file_based_input_fn_builder(input_file, batch_size, is_training, drop_remain
 
         # For training, we want a lot of parallel reading and shuffling.
         # For eval, we want no shuffling and parallel reading doesn't matter.
-        d = tf.data.TFRecordDataset("encoded_data/" + input_file + ".tfrecords")
+        d = tf.data.TFRecordDataset(FLAGS.encoded_data_dir + "/" + input_file + ".tfrecords")
         if is_training:
             d = d.shuffle(buffer_size=1024)
             d = d.repeat()
@@ -174,13 +175,12 @@ def main(argv=None):
         if i > 18:
             print(key + ": " + str(flags[key]))
 
-    mirrored_strategy = tf.distribute.MirroredStrategy()
-    config = tf.estimator.RunConfig(
-        train_distribute=mirrored_strategy, eval_distribute=mirrored_strategy, save_checkpoints_steps=10000)
+    config = tf.compat.v1.estimator.tpu.RunConfig()
 
-    vocab_size, tokenizer = text_processor.text_processor(FLAGS.data_dir, FLAGS.title_len, FLAGS.abstract_len, FLAGS.vocab_level, "encoded_data")
+    vocab_size, tokenizer = text_processor.text_processor(FLAGS.data_dir, FLAGS.title_len, FLAGS.abstract_len, FLAGS.vocab_level, FLAGS.encoded_data_dir)
 
-    estimator = tf.estimator.Estimator(model_fn=model_fn, model_dir=FLAGS.model_dir,
+    estimator = tf.compat.v1.estimator.tpu.TPUEstimator(model_fn=model_fn, model_dir=FLAGS.model_dir,
+                                                        train_batch_size=FLAGS.batch_size, use_tpu=False,
                                        params={'vocab_size': vocab_size}, config=config)
 
     language_train_input_fn = file_based_input_fn_builder(
@@ -236,40 +236,6 @@ def main(argv=None):
                 #     plot_attention_weights(result[layerName], input_sentence, tokenizer, False)
                 break
 
-
-def plot_attention_weights(attention, encoded_sentence, tokenizer, compressed):
-    fig = plt.figure(figsize=(16, 8))
-    result = list(range(attention.shape[1]))
-
-    sentence = encoded_sentence
-    fontdict = {'fontsize': 10}
-
-    for head in range(attention.shape[0]):
-        ax = fig.add_subplot(2, 4, head + 1)
-
-        input_sentence = ['<start>'] + [tokenizer.decode([i]) for i in sentence if i < tokenizer.vocab_size and i != 0] + ['<end>']
-        output_sentence = input_sentence
-
-        ax.set_xticklabels(input_sentence, fontdict=fontdict, rotation=90)
-
-        if compressed: # check if this is the compressed layer
-            output_sentence = list(range(FLAGS.sparse_len))
-
-        ax.set_yticklabels(output_sentence, fontdict=fontdict)
-
-        # plot the attention weights
-        ax.matshow(attention[head][:len(output_sentence), :len(input_sentence)], cmap='viridis')
-
-        ax.set_xticks(range(len(sentence) + 2))
-        ax.set_yticks(range(len(result)))
-
-        ax.set_ylim(len(output_sentence) - 1, 0)
-        ax.set_xlim(0, len(input_sentence) - 1)
-
-        ax.set_xlabel('Head {}'.format(head + 1))
-
-    plt.tight_layout()
-    plt.show()
 
 if __name__ == '__main__':
     tf.compat.v1.app.run()
