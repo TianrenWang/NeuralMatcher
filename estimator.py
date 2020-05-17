@@ -6,8 +6,8 @@ from __future__ import print_function
 import tensorflow as tf
 import numpy as np
 
-import transformer
-import text_processor
+from . import transformer
+from . import text_processor
 
 flags = tf.compat.v1.flags
 
@@ -68,15 +68,17 @@ def model_fn(features, labels, mode, params):
     abstract_logits, abstract_encoder_out = network(abstracts, mode == tf.estimator.ModeKeys.TRAIN)
     title_logits, title_encoder_out = network(titles, mode == tf.estimator.ModeKeys.TRAIN)
 
-    # matching_layer = tf.keras.Sequential([
-    #         tf.keras.layers.Dropout(FLAGS.dropout),
-    #         tf.keras.layers.Dense(FLAGS.depth, activation='relu'),
-    #         tf.keras.layers.Dropout(FLAGS.dropout),
-    #         tf.keras.layers.Dense(FLAGS.depth, activation='relu')
-    #     ])
-    #
-    # abstract_match = matching_layer(abstract_encoder_out)
-    # title_match = matching_layer(title_encoder_out)
+    matching_layer = tf.keras.Sequential([
+            tf.keras.layers.Dropout(FLAGS.dropout),
+            tf.keras.layers.Dense(FLAGS.depth, activation='relu'),
+            tf.keras.layers.LayerNormalization(epsilon=1e-6),
+            tf.keras.layers.Dropout(FLAGS.dropout),
+            tf.keras.layers.Dense(FLAGS.depth, activation='relu'),
+            tf.keras.layers.LayerNormalization(epsilon=1e-6)
+        ])
+
+    abstract_match = matching_layer(abstract_encoder_out)
+    title_match = matching_layer(title_encoder_out)
 
     def lm_loss_function(real, pred):
         mask = tf.math.logical_not(tf.math.equal(real, 0))  # Every element that is NOT padded
@@ -92,10 +94,10 @@ def model_fn(features, labels, mode, params):
     abstract_loss = lm_loss_function(tf.slice(abstracts, [0, 1], [-1, -1]), abstract_logits)
     title_loss = lm_loss_function(tf.slice(titles, [0, 1], [-1, -1]), title_logits)
 
-    # difference = tf.reduce_sum(tf.math.pow(abstract_match - title_match, 2), -1)
-    # difference_loss = tf.reduce_mean(difference)
+    difference = tf.reduce_mean(tf.abs(abstract_match - title_match), -1)
+    difference_loss = tf.reduce_mean(difference)
 
-    loss = abstract_loss + title_loss# + difference_loss
+    loss = abstract_loss + title_loss + difference_loss
 
     predictions = {
         'original_title': titles,
@@ -110,12 +112,13 @@ def model_fn(features, labels, mode, params):
         export_outputs = {
             SIGNATURE_NAME: tf.estimator.export.PredictOutput(predictions)
         }
-        return tf.estimator.EstimatorSpec(mode=mode, predictions=predictions, export_outputs=export_outputs)
+        return tf.compat.v1.estimator.tpu.TPUEstimatorSpec(mode=mode, predictions=predictions, export_outputs=export_outputs)
 
     if mode == tf.estimator.ModeKeys.TRAIN:
         global_step = tf.compat.v1.train.get_or_create_global_step()
 
         optimizer = tf.compat.v1.train.AdamOptimizer(learning_rate=1e-5, beta2=0.98, epsilon=1e-9)
+        optimizer = tf.compat.v1.tpu.CrossShardOptimizer(optimizer)
 
         # Batch norm requires update ops to be added as a dependency to the train_op
         update_ops = tf.compat.v1.get_collection(tf.compat.v1.GraphKeys.UPDATE_OPS)
@@ -124,7 +127,7 @@ def model_fn(features, labels, mode, params):
     else:
         train_op = None
 
-    return tf.estimator.EstimatorSpec(
+    return tf.compat.v1.estimator.tpu.TPUEstimatorSpec(
         mode=mode,
         predictions=predictions,
         loss=loss,
@@ -175,13 +178,16 @@ def main(argv=None):
         if i > 18:
             print(key + ": " + str(flags[key]))
 
-    config = tf.compat.v1.estimator.tpu.RunConfig()
+    tpu_cluster_resolver = tf.distribute.cluster_resolver.TPUClusterResolver()
+
+    config = tf.compat.v1.estimator.tpu.RunConfig(cluster=tpu_cluster_resolver)
 
     vocab_size, tokenizer = text_processor.text_processor(FLAGS.data_dir, FLAGS.title_len, FLAGS.abstract_len, FLAGS.vocab_level, FLAGS.encoded_data_dir)
 
     estimator = tf.compat.v1.estimator.tpu.TPUEstimator(model_fn=model_fn, model_dir=FLAGS.model_dir,
-                                                        train_batch_size=FLAGS.batch_size, use_tpu=False,
-                                       params={'vocab_size': vocab_size}, config=config)
+                                                        train_batch_size=FLAGS.batch_size, eval_batch_size=8,
+                                                        predict_batch_size=8, use_tpu=True,
+                                                        params={'vocab_size': vocab_size}, config=config)
 
     language_train_input_fn = file_based_input_fn_builder(
         input_file="training",
@@ -191,7 +197,7 @@ def main(argv=None):
 
     language_eval_input_fn = file_based_input_fn_builder(
         input_file="testing",
-        batch_size=1,
+        batch_size=8,
         is_training=False,
         drop_remainder=True)
 
@@ -200,15 +206,17 @@ def main(argv=None):
         print("Training")
         print("***************************************")
 
-        trainspec = tf.estimator.TrainSpec(
-            input_fn=language_train_input_fn,
-            max_steps=FLAGS.train_steps)
+        # trainspec = tf.estimator.TrainSpec(
+        #     input_fn=language_train_input_fn,
+        #     max_steps=FLAGS.train_steps)
+        #
+        # evalspec = tf.estimator.EvalSpec(
+        #     input_fn=language_eval_input_fn,
+        #     throttle_secs=7200)
 
-        evalspec = tf.estimator.EvalSpec(
-            input_fn=language_eval_input_fn,
-            throttle_secs=7200)
-
-        tf.estimator.train_and_evaluate(estimator, trainspec, evalspec)
+        # tf.estimator.train_and_evaluate(estimator, trainspec, evalspec)
+        estimator.train(input_fn=language_train_input_fn, max_steps=FLAGS.train_steps)
+        estimator.evaluate(input_fn=language_eval_input_fn, steps=1100)
 
     if FLAGS.predict:
         print("***************************************")
