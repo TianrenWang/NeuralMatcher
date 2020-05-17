@@ -70,8 +70,10 @@ def model_fn(features, labels, mode, params):
     matching_layer = tf.keras.Sequential([
             tf.keras.layers.Dropout(FLAGS.dropout),
             tf.keras.layers.Dense(FLAGS.depth, activation='relu'),
+            tf.keras.layers.LayerNormalization(epsilon=1e-6),
             tf.keras.layers.Dropout(FLAGS.dropout),
-            tf.keras.layers.Dense(FLAGS.depth, activation='relu')
+            tf.keras.layers.Dense(FLAGS.depth, activation='relu'),
+            tf.keras.layers.LayerNormalization(epsilon=1e-6)
         ])
 
     abstract_match = matching_layer(abstract_encoder_out)
