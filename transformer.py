@@ -349,8 +349,8 @@ def TED_generator(vocab_size, FLAGS):
 
             self.dropout = tf.keras.layers.Dropout(rate)
 
-            self.lstm = tf.keras.layers.LSTM(int(d_model/2), dropout=FLAGS.dropout, return_sequences=True)
-            self.decompressor = tf.keras.layers.Bidirectional(self.lstm)
+            self.lstm = tf.keras.layers.LSTM(int(d_model/2), dropout=FLAGS.dropout, return_state=True)
+            self.bilstm = tf.keras.layers.Bidirectional(self.lstm)
             self.normalizer = tf.keras.layers.LayerNormalization(epsilon=1e-6)
 
         def call(self, x, training, mask):
@@ -368,16 +368,9 @@ def TED_generator(vocab_size, FLAGS):
                 x, encoder_attention_weight = self.enc_layers[i](x, training, mask)
                 encoder_attention_weights.append(encoder_attention_weight)
 
-            mask = tf.expand_dims(tf.squeeze(mask), -1)
-            pooled_out = tf.math.reduce_sum(x * (1 - mask), 1, True)
-            pooled_out = self.normalizer(pooled_out)
-            x = tf.tile(pooled_out, [1, int(seq_len//8), 1])
-            x += self.pos_encoding[:, :int(seq_len//8), :]
-            x = self.decompressor(x, training=training)
+            pooled_out = self.bilstm(x, training=training, mask=(1 - tf.squeeze(mask, [1,2])))
 
-            print("Encoder output: " + str(x))
-
-            return x, pooled_out  # (batch_size, input_seq_len, d_model)
+            return x, pooled_out[0]  # (batch_size, input_seq_len, d_model)
 
 
     class Decoder(tf.keras.layers.Layer):
@@ -450,19 +443,19 @@ def TED_generator(vocab_size, FLAGS):
             self.encoder = Encoder(num_layers, d_model, num_heads, dff,
                                    vocab_size, self.embedding, rate)
 
-            self.decoder = Decoder(num_layers, d_model, num_heads, dff,
-                                   vocab_size, self.embedding, rate)
-
-            self.final_layer = tf.keras.layers.Dense(vocab_size)
+            # self.decoder = Decoder(num_layers, d_model, num_heads, dff,
+            #                        vocab_size, self.embedding, rate)
+            #
+            # self.final_layer = tf.keras.layers.Dense(vocab_size)
 
         def call(self, inp, tar, training, enc_padding_mask, look_ahead_mask):
             enc_output, pooled_out = self.encoder(inp, training, enc_padding_mask)  # (batch_size, inp_seq_len, d_model)
 
-            dec_output, _ = self.decoder(tar, enc_output, training, look_ahead_mask, None)
+            # dec_output, _ = self.decoder(tar, enc_output, training, look_ahead_mask, None)
+            #
+            # final_output = self.final_layer(dec_output)  # (batch_size, tar_seq_len, target_vocab_size)
 
-            final_output = self.final_layer(dec_output)  # (batch_size, tar_seq_len, target_vocab_size)
-
-            return final_output, pooled_out
+            return pooled_out
 
     def model(sentences, is_training):
         predicted = tf.slice(sentences, [0, 0], [-1, sentences.get_shape()[1] - 1])

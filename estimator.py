@@ -5,7 +5,6 @@ from __future__ import print_function
 
 import tensorflow as tf
 import numpy as np
-import matplotlib.pyplot as plt
 
 import transformer
 import text_processor
@@ -17,6 +16,8 @@ flags.DEFINE_string("data_dir", default="data/",
       help="data directory")
 flags.DEFINE_string("model_dir", default="model/",
       help="directory of model")
+flags.DEFINE_string("encoded_data_dir", default="encoded_data/",
+      help="directory of tfrecords")
 flags.DEFINE_integer("train_steps", default=100000,
       help="number of training steps")
 flags.DEFINE_integer("vocab_level", default=15,
@@ -64,8 +65,8 @@ def model_fn(features, labels, mode, params):
 
     network = transformer.TED_generator(vocab_size, FLAGS)
 
-    abstract_logits, abstract_encoder_out = network(abstracts, mode == tf.estimator.ModeKeys.TRAIN)
-    title_logits, title_encoder_out = network(titles, mode == tf.estimator.ModeKeys.TRAIN)
+    abstract_encoder_out = network(abstracts, mode == tf.estimator.ModeKeys.TRAIN)
+    title_encoder_out = network(titles, mode == tf.estimator.ModeKeys.TRAIN)
 
     matching_layer = tf.keras.Sequential([
             tf.keras.layers.Dropout(FLAGS.dropout),
@@ -90,21 +91,24 @@ def model_fn(features, labels, mode, params):
         return tf.reduce_mean(loss_)
 
     # Calculate the loss
-    abstract_loss = lm_loss_function(tf.slice(abstracts, [0, 1], [-1, -1]), abstract_logits)
-    title_loss = lm_loss_function(tf.slice(titles, [0, 1], [-1, -1]), title_logits)
+    # abstract_loss = lm_loss_function(tf.slice(abstracts, [0, 1], [-1, -1]), abstract_logits)
+    # title_loss = lm_loss_function(tf.slice(titles, [0, 1], [-1, -1]), title_logits)
 
-    difference = tf.reduce_sum(tf.math.pow(abstract_match - title_match, 2), -1)
-    difference_loss = tf.reduce_mean(difference)
+    matched_difference = tf.reduce_mean(tf.abs(abstract_match - title_match), -1)
+    matched_difference_loss = tf.reduce_mean(matched_difference)
 
-    loss = abstract_loss + title_loss + difference_loss
+    shifted_abstract = tf.roll(abstract_match, 1, 0)
+
+    negative_match_difference = 1 / tf.reduce_mean(tf.abs(shifted_abstract - title_match), -1)
+    negative_matched_difference_loss = tf.reduce_mean(negative_match_difference)
+
+    loss = matched_difference_loss + negative_matched_difference_loss
 
     predictions = {
         'original_title': titles,
-        'title_prediction': tf.argmax(title_logits, 2),
-        'encoded_title': title_encoder_out,
         'original_abstract': abstracts,
-        'abstract_prediction': tf.argmax(abstract_logits, 2),
-        'encoded_abstract': abstract_encoder_out
+        'encoded_title': title_match,
+        'encoded_abstract': abstract_match
     }
 
     if mode == tf.estimator.ModeKeys.PREDICT:
@@ -217,61 +221,45 @@ def main(argv=None):
         print("Predicting")
         print("***************************************")
 
-        results = estimator.predict(input_fn=language_eval_input_fn, predict_keys=['title_prediction', 'original_title',
-                                                                                   'abstract_prediction', 'original_abstract'])
+        results = estimator.predict(input_fn=language_eval_input_fn, predict_keys=['encoded_title', 'original_title',
+                                                                                   'encoded_abstract', 'original_abstract'])
+
+        original_titles = []
+        original_abstracts = []
+        encoded_titles = []
+        encoded_abstracts = []
 
         for i, result in enumerate(results):
-            print("------------------------------------")
-            output_title = result['title_prediction']
+            if i % 100 == 0:
+                print("Predicted " + str(i) + " samples")
             input_title = result['original_title']
-            print("result: " + str(output_title))
-            print("decoded: " + str(tokenizer.decode([i for i in output_title if i < tokenizer.vocab_size])))
-            print("original: " + str(tokenizer.decode([i for i in input_title if i < tokenizer.vocab_size])))
-            output_abstract = result['abstract_prediction']
+            original_titles.append(tokenizer.decode([i for i in input_title if i < tokenizer.vocab_size]))
             input_abstract = result['original_abstract']
-            print("result: " + str(output_abstract))
-            print("decoded: " + str(tokenizer.decode([i for i in output_abstract if i < tokenizer.vocab_size])))
-            print("original: " + str(tokenizer.decode([i for i in input_abstract if i < tokenizer.vocab_size])))
+            original_abstracts.append(tokenizer.decode([i for i in input_abstract if i < tokenizer.vocab_size]))
+            encoded_titles.append(result['encoded_title'])
+            encoded_abstracts.append(result['encoded_abstract'])
 
             if i + 1 == FLAGS.predict_samples:
-                # for layerName in encoderLayerNames:
-                #     plot_attention_weights(result[layerName], input_sentence, tokenizer, False)
                 break
 
+        print("Sample title: " + original_titles[0])
+        print("Sample abstract: " + original_abstracts[0])
 
-def plot_attention_weights(attention, encoded_sentence, tokenizer, compressed):
-    fig = plt.figure(figsize=(16, 8))
-    result = list(range(attention.shape[1]))
+        differences = []
 
-    sentence = encoded_sentence
-    fontdict = {'fontsize': 10}
+        for title in encoded_titles:
+            difference = np.sum(np.abs(encoded_abstracts[0] - title))
+            differences.append(difference)
 
-    for head in range(attention.shape[0]):
-        ax = fig.add_subplot(2, 4, head + 1)
+        sorted_index = np.argsort(differences)
 
-        input_sentence = ['<start>'] + [tokenizer.decode([i]) for i in sentence if i < tokenizer.vocab_size and i != 0] + ['<end>']
-        output_sentence = input_sentence
+        print("Similar title ranking")
 
-        ax.set_xticklabels(input_sentence, fontdict=fontdict, rotation=90)
+        for i in range(10):
+            index = sorted_index[i]
+            print(str(index) + ": " + original_titles[index])
+            print("Difference: " + str(differences[index]))
 
-        if compressed: # check if this is the compressed layer
-            output_sentence = list(range(FLAGS.sparse_len))
-
-        ax.set_yticklabels(output_sentence, fontdict=fontdict)
-
-        # plot the attention weights
-        ax.matshow(attention[head][:len(output_sentence), :len(input_sentence)], cmap='viridis')
-
-        ax.set_xticks(range(len(sentence) + 2))
-        ax.set_yticks(range(len(result)))
-
-        ax.set_ylim(len(output_sentence) - 1, 0)
-        ax.set_xlim(0, len(input_sentence) - 1)
-
-        ax.set_xlabel('Head {}'.format(head + 1))
-
-    plt.tight_layout()
-    plt.show()
 
 if __name__ == '__main__':
     tf.compat.v1.app.run()
