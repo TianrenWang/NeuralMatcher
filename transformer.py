@@ -134,21 +134,6 @@ def TED_generator(vocab_size, FLAGS):
         # add up to 1.
         attention_weights = tf.nn.softmax(scaled_attention_logits, axis=-1)  # (..., seq_len_q, seq_len_k)
 
-        if sparse:
-            # max_weights = tf.math.reduce_max(attention_weights, axis=-1)
-            # attention_weights /= tf.expand_dims(max_weights, -1)
-            # attention_weights = tf.keras.layers.ReLU(1.0, 0, FLAGS.sparse_thresh)(attention_weights)
-            print("************Using Sparse Attention**********************")
-            top_values, top_indices = tf.math.top_k(attention_weights, FLAGS.sparse_lim)
-            positions = tf.where(tf.not_equal(top_indices, 99999))
-            top_indices = tf.reshape(top_indices, [tf.size(top_indices), 1])
-            positions = tf.slice(positions, [0,0], [-1, 3]) # we only want the first 3 dimensions, since the last dimension is incorrect
-            positions = tf.cast(positions, tf.int32)
-            actual_indices = tf.concat([positions, top_indices], -1)
-            top_values = tf.reshape(top_values, [tf.size(top_values)])
-            attention_weights = tf.scatter_nd(actual_indices, top_values,
-                                              tf.constant(attention_weights.get_shape().as_list()))
-
         output = tf.matmul(attention_weights, v)  # (..., seq_len_q, depth_v)
 
         return output, attention_weights
@@ -363,6 +348,7 @@ def TED_generator(vocab_size, FLAGS):
                                for _ in range(num_layers)]
 
             self.dropout = tf.keras.layers.Dropout(rate)
+            self.normalizer = tf.keras.layers.LayerNormalization(epsilon=1e-6)
 
         def call(self, x, training, mask):
             seq_len = x.shape[1]
@@ -381,10 +367,7 @@ def TED_generator(vocab_size, FLAGS):
 
             mask = tf.expand_dims(tf.squeeze(mask), -1)
             pooled_out = tf.math.reduce_sum(x * (1 - mask), 1, True)
-            x = tf.tile(pooled_out, [1, int(seq_len//8), 1])
-            x += self.pos_encoding[:, :int(seq_len//8), :]
-
-            print("Encoder output: " + str(x))
+            pooled_out = self.normalizer(pooled_out)
 
             return x, pooled_out  # (batch_size, input_seq_len, d_model)
 
@@ -459,19 +442,19 @@ def TED_generator(vocab_size, FLAGS):
             self.encoder = Encoder(num_layers, d_model, num_heads, dff,
                                    vocab_size, self.embedding, rate)
 
-            self.decoder = Decoder(num_layers, d_model, num_heads, dff,
-                                   vocab_size, self.embedding, rate)
-
-            self.final_layer = tf.keras.layers.Dense(vocab_size)
+            # self.decoder = Decoder(num_layers, d_model, num_heads, dff,
+            #                        vocab_size, self.embedding, rate)
+            #
+            # self.final_layer = tf.keras.layers.Dense(vocab_size)
 
         def call(self, inp, tar, training, enc_padding_mask, look_ahead_mask):
             enc_output, pooled_out = self.encoder(inp, training, enc_padding_mask)  # (batch_size, inp_seq_len, d_model)
 
-            dec_output, _ = self.decoder(tar, enc_output, training, look_ahead_mask, None)
+            # dec_output, _ = self.decoder(tar, enc_output, training, look_ahead_mask, None)
+            #
+            # final_output = self.final_layer(dec_output)  # (batch_size, tar_seq_len, target_vocab_size)
 
-            final_output = self.final_layer(dec_output)  # (batch_size, tar_seq_len, target_vocab_size)
-
-            return final_output, pooled_out
+            return pooled_out
 
     def model(sentences, is_training):
         predicted = tf.slice(sentences, [0, 0], [-1, sentences.get_shape()[1] - 1])
