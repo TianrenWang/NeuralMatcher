@@ -81,12 +81,12 @@ def model_fn(features, labels, mode, params):
     title_match = matching_layer(title_encoder_out)
 
     def lm_loss_function(real, pred):
-        mask = tf.math.logical_not(tf.math.equal(real, 0))  # Every element that is NOT padded
+        # mask = tf.math.logical_not(tf.math.equal(real, 0))  # Every element that is NOT padded
         # They will have to deal with run on sentences with this kind of setup
         loss_ = tf.keras.losses.sparse_categorical_crossentropy(real, pred, from_logits=True)
 
-        mask = tf.cast(mask, dtype=loss_.dtype)
-        loss_ *= mask
+        # mask = tf.cast(mask, dtype=loss_.dtype)
+        # loss_ *= mask
 
         return tf.reduce_mean(loss_)
 
@@ -97,9 +97,12 @@ def model_fn(features, labels, mode, params):
     matched_difference = tf.reduce_mean(tf.abs(abstract_match - title_match), -1)
     matched_difference_loss = tf.reduce_mean(matched_difference)
 
-    shifted_abstract = tf.roll(abstract_match, 1, 0)
+    batch_size = tf.shape(abstract_match)[0]
+    duplicated_abstract = tf.tile(tf.expand_dims(abstract_match, 0), [batch_size, 1, 1])
+    all_differences = tf.reduce_mean(tf.abs(duplicated_abstract - tf.expand_dims(title_match, 1)), -1)
+    all_differences = all_differences * (1 - tf.linalg.diag(tf.ones([batch_size]) * -100000))
 
-    negative_match_difference = 1 / tf.reduce_mean(tf.abs(shifted_abstract - title_match), -1)
+    negative_match_difference = 0.01 / all_differences
     negative_matched_difference_loss = tf.reduce_mean(negative_match_difference)
 
     loss = matched_difference_loss + negative_matched_difference_loss
@@ -182,23 +185,25 @@ def main(argv=None):
             print(key + ": " + str(flags[key]))
 
     tpu_cluster_resolver = tf.distribute.cluster_resolver.TPUClusterResolver()
+    tpu_config = tf.compat.v1.estimator.tpu.TPUConfig(
+        per_host_input_for_training=tf.compat.v1.estimator.tpu.InputPipelineConfig.BROADCAST)
 
-    config = tf.compat.v1.estimator.tpu.RunConfig(cluster=tpu_cluster_resolver)
+    config = tf.compat.v1.estimator.tpu.RunConfig(cluster=tpu_cluster_resolver, tpu_config=tpu_config)
 
     vocab_size, tokenizer = text_processor.text_processor(FLAGS.data_dir, FLAGS.title_len, FLAGS.abstract_len, FLAGS.vocab_level, FLAGS.encoded_data_dir)
 
     estimator = tf.compat.v1.estimator.tpu.TPUEstimator(model_fn=model_fn, model_dir=FLAGS.model_dir,
                                                         train_batch_size=FLAGS.batch_size, eval_batch_size=8,
-                                                        predict_batch_size=8, use_tpu=True,
+                                                        predict_batch_size=8, use_tpu=False,
                                                         params={'vocab_size': vocab_size}, config=config)
 
-    language_train_input_fn = file_based_input_fn_builder(
+    train_input_fn = file_based_input_fn_builder(
         input_file="training",
         batch_size=FLAGS.batch_size,
         is_training=True,
         drop_remainder=True)
 
-    language_eval_input_fn = file_based_input_fn_builder(
+    eval_input_fn = file_based_input_fn_builder(
         input_file="testing",
         batch_size=8,
         is_training=False,
@@ -209,25 +214,16 @@ def main(argv=None):
         print("Training")
         print("***************************************")
 
-        # trainspec = tf.estimator.TrainSpec(
-        #     input_fn=language_train_input_fn,
-        #     max_steps=FLAGS.train_steps)
-        #
-        # evalspec = tf.estimator.EvalSpec(
-        #     input_fn=language_eval_input_fn,
-        #     throttle_secs=7200)
-
-        # tf.estimator.train_and_evaluate(estimator, trainspec, evalspec)
-        estimator.evaluate(input_fn=language_eval_input_fn, steps=1100)
-        estimator.train(input_fn=language_train_input_fn, max_steps=FLAGS.train_steps)
-        estimator.evaluate(input_fn=language_eval_input_fn, steps=1100)
+        estimator.evaluate(input_fn=eval_input_fn, steps=1100)
+        estimator.train(input_fn=train_input_fn, max_steps=FLAGS.train_steps)
+        estimator.evaluate(input_fn=eval_input_fn, steps=1100)
 
     if FLAGS.predict:
         print("***************************************")
         print("Predicting")
         print("***************************************")
 
-        results = estimator.predict(input_fn=language_eval_input_fn, predict_keys=['encoded_title', 'original_title',
+        results = estimator.predict(input_fn=eval_input_fn, predict_keys=['encoded_title', 'original_title',
                                                                                    'encoded_abstract', 'original_abstract'])
 
         original_titles = []
@@ -250,21 +246,49 @@ def main(argv=None):
 
         print("Sample title: " + original_titles[0])
         print("Sample abstract: " + original_abstracts[0])
+        print("Difference: " + str(np.mean(np.abs(encoded_abstracts[0] - encoded_titles[0]))))
 
         differences = []
 
-        for title in encoded_titles:
-            difference = np.sum(np.abs(encoded_abstracts[0] - title))
+        for abstract in encoded_abstracts:
+            difference = np.mean(np.abs(abstract - encoded_titles[0]))
             differences.append(difference)
 
         sorted_index = np.argsort(differences)
 
-        print("Similar title ranking")
+        for i in range(len(sorted_index)):
+            if sorted_index[i] == 0:
+                print("Original title ranking: " + str(i))
+
+        print("Most similar title ranking")
 
         for i in range(10):
             index = sorted_index[i]
-            print(str(index) + ": " + original_titles[index])
+            print(str(i) + ": " + original_titles[index])
             print("Difference: " + str(differences[index]))
+
+        print("Least similar title ranking")
+
+        length = len(sorted_index) - 1
+
+        for i in range(10):
+            index = sorted_index[length-i]
+            print(str(i) + ": " + original_titles[index])
+            print("Difference: " + str(differences[index]))
+
+        # Calculates the overall score for how often the correct title ranks first
+        ranking_count = 0
+        for i, title in enumerate(encoded_titles):
+            search_differences = []
+            for abstract in encoded_abstracts:
+                difference = np.mean(np.abs(abstract - title))
+                search_differences.append(difference)
+            sorted_index = np.argsort(search_differences)
+            for j, index in enumerate(sorted_index):
+                if index == i:
+                    ranking_count += j
+
+        print("Overall first place ranking: " + str(ranking_count/len(encoded_abstracts)))
 
 
 if __name__ == '__main__':

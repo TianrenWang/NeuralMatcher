@@ -19,9 +19,9 @@ gcloud ai-platform jobs submit training $JOB_NAME \
     --data_dir=$DATA_DIR \
     --model_dir=$OUTPUT_PATH \
     --encoded_data_dir=$ENCODED_DATA \
-    --train_steps=20000 \
+    --train_steps=10000 \
     --vocab_level=15 \
-    --dropout=0.1 \
+    --dropout=0.5 \
     --heads=8 \
     --abstract_len=512 \
     --title_len=60 \
@@ -31,7 +31,7 @@ gcloud ai-platform jobs submit training $JOB_NAME \
     --feedforward=512 \
     --train=True \
     --predict=True \
-    --predict_samples=10 \
+    --predict_samples=8800 \
     --description="Put the experimental description here" \
 
   $@

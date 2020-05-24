@@ -365,8 +365,8 @@ def TED_generator(vocab_size, FLAGS):
                 x, encoder_attention_weight = self.enc_layers[i](x, training, mask)
                 encoder_attention_weights.append(encoder_attention_weight)
 
-            mask = tf.expand_dims(tf.squeeze(mask), -1)
-            pooled_out = tf.math.reduce_sum(x * (1 - mask), 1, True)
+            mask = tf.expand_dims(tf.squeeze(mask, [1, 2]), -1)
+            pooled_out = tf.math.reduce_sum(x * (1 - mask), 1)
             pooled_out = self.normalizer(pooled_out)
 
             return x, pooled_out  # (batch_size, input_seq_len, d_model)
