@@ -77,8 +77,8 @@ def model_fn(features, labels, mode, params):
             tf.keras.layers.LayerNormalization(epsilon=1e-6)
         ])
 
-    abstract_match = matching_layer(abstract_encoder_out)
-    title_match = matching_layer(title_encoder_out)
+    abstract_match = matching_layer(abstract_encoder_out, training=mode == tf.estimator.ModeKeys.TRAIN)
+    title_match = matching_layer(title_encoder_out, training=mode == tf.estimator.ModeKeys.TRAIN)
 
     def lm_loss_function(real, pred):
         # mask = tf.math.logical_not(tf.math.equal(real, 0))  # Every element that is NOT padded
@@ -194,7 +194,7 @@ def main(argv=None):
 
     estimator = tf.compat.v1.estimator.tpu.TPUEstimator(model_fn=model_fn, model_dir=FLAGS.model_dir,
                                                         train_batch_size=FLAGS.batch_size, eval_batch_size=8,
-                                                        predict_batch_size=8, use_tpu=False,
+                                                        predict_batch_size=8, use_tpu=True,
                                                         params={'vocab_size': vocab_size}, config=config)
 
     train_input_fn = file_based_input_fn_builder(
@@ -214,7 +214,6 @@ def main(argv=None):
         print("Training")
         print("***************************************")
 
-        estimator.evaluate(input_fn=eval_input_fn, steps=1100)
         estimator.train(input_fn=train_input_fn, max_steps=FLAGS.train_steps)
         estimator.evaluate(input_fn=eval_input_fn, steps=1100)
 
