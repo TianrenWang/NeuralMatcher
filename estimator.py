@@ -69,16 +69,14 @@ def model_fn(features, labels, mode, params):
     title_encoder_out = network(titles, mode == tf.estimator.ModeKeys.TRAIN)
 
     matching_layer = tf.keras.Sequential([
-            tf.keras.layers.Dropout(FLAGS.dropout),
             tf.keras.layers.Dense(FLAGS.depth, activation='relu'),
             tf.keras.layers.LayerNormalization(epsilon=1e-6),
-            tf.keras.layers.Dropout(FLAGS.dropout),
             tf.keras.layers.Dense(FLAGS.depth, activation='relu'),
             tf.keras.layers.LayerNormalization(epsilon=1e-6)
         ])
 
-    abstract_match = matching_layer(abstract_encoder_out, training=mode == tf.estimator.ModeKeys.TRAIN)
-    title_match = matching_layer(title_encoder_out, training=mode == tf.estimator.ModeKeys.TRAIN)
+    abstract_match = matching_layer(abstract_encoder_out)
+    title_match = matching_layer(title_encoder_out)
 
     def lm_loss_function(real, pred):
         # mask = tf.math.logical_not(tf.math.equal(real, 0))  # Every element that is NOT padded
@@ -243,37 +241,39 @@ def main(argv=None):
             if i + 1 == FLAGS.predict_samples:
                 break
 
-        print("Sample title: " + original_titles[0])
-        print("Sample abstract: " + original_abstracts[0])
-        print("Difference: " + str(np.mean(np.abs(encoded_abstracts[0] - encoded_titles[0]))))
+        for k in range(10):
+            print("************************************************")
+            print("Sample title: " + original_titles[k])
+            print("Sample abstract: " + original_abstracts[k])
+            print("Difference: " + str(np.mean(np.abs(encoded_abstracts[k] - encoded_titles[k]))))
 
-        differences = []
+            differences = []
 
-        for abstract in encoded_abstracts:
-            difference = np.mean(np.abs(abstract - encoded_titles[0]))
-            differences.append(difference)
+            for abstract in encoded_abstracts:
+                difference = np.mean(np.abs(abstract - encoded_titles[k]))
+                differences.append(difference)
 
-        sorted_index = np.argsort(differences)
+            sorted_index = np.argsort(differences)
 
-        for i in range(len(sorted_index)):
-            if sorted_index[i] == 0:
-                print("Original title ranking: " + str(i))
+            for i in range(len(sorted_index)):
+                if sorted_index[i] == k:
+                    print("Original title ranking: " + str(i))
 
-        print("Most similar title ranking")
+            print("Most similar title ranking")
 
-        for i in range(10):
-            index = sorted_index[i]
-            print(str(i) + ": " + original_titles[index])
-            print("Difference: " + str(differences[index]))
+            for i in range(10):
+                index = sorted_index[i]
+                print(str(i) + ": " + original_titles[index])
+                print("Difference: " + str(differences[index]))
 
-        print("Least similar title ranking")
+            print("Least similar title ranking")
 
-        length = len(sorted_index) - 1
+            length = len(sorted_index) - 1
 
-        for i in range(10):
-            index = sorted_index[length-i]
-            print(str(i) + ": " + original_titles[index])
-            print("Difference: " + str(differences[index]))
+            for i in range(10):
+                index = sorted_index[length-i]
+                print(str(i) + ": " + original_titles[index])
+                print("Difference: " + str(differences[index]))
 
         # Calculates the overall score for how often the correct title ranks first
         ranking_count = 0

@@ -21,13 +21,13 @@ gcloud ai-platform jobs submit training $JOB_NAME \
     --encoded_data_dir=$ENCODED_DATA \
     --train_steps=10000 \
     --vocab_level=15 \
-    --dropout=0.5 \
+    --dropout=0.1 \
     --heads=8 \
     --abstract_len=512 \
     --title_len=60 \
     --batch_size=32 \
     --layers=6 \
-    --depth=768 \
+    --depth=512 \
     --feedforward=512 \
     --train=True \
     --predict=True \
