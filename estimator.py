@@ -207,6 +207,12 @@ def main(argv=None):
         is_training=False,
         drop_remainder=True)
 
+    pred_input_fn = file_based_input_fn_builder(
+        input_file="prediction",
+        batch_size=8,
+        is_training=False,
+        drop_remainder=True)
+
     if FLAGS.train:
         print("***************************************")
         print("Training")
@@ -220,7 +226,7 @@ def main(argv=None):
         print("Predicting")
         print("***************************************")
 
-        results = estimator.predict(input_fn=eval_input_fn, predict_keys=['encoded_title', 'original_title',
+        results = estimator.predict(input_fn=pred_input_fn, predict_keys=['encoded_title', 'original_title',
                                                                                    'encoded_abstract', 'original_abstract'])
 
         original_titles = []
@@ -241,7 +247,7 @@ def main(argv=None):
             if i + 1 == FLAGS.predict_samples:
                 break
 
-        for k in range(10):
+        for k in range(20):
             print("************************************************")
             print("Sample title: " + original_titles[k])
             print("Sample abstract: " + original_abstracts[k])
@@ -249,8 +255,8 @@ def main(argv=None):
 
             differences = []
 
-            for abstract in encoded_abstracts:
-                difference = np.mean(np.abs(abstract - encoded_titles[k]))
+            for title in encoded_titles:
+                difference = np.mean(np.abs(title - encoded_titles[k]))
                 differences.append(difference)
 
             sorted_index = np.argsort(differences)

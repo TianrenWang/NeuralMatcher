@@ -13,6 +13,7 @@ def create_int_feature(values):
 def text_processor(data_path, title_max_len, abstract_max_len, vocab_level, processed_path):
     samples = []
     dir_path = data_path
+    prediction_titles = []
 
     if not tf.gfile.Exists(processed_path):
         tf.gfile.MakeDirs(processed_path)
@@ -21,6 +22,14 @@ def text_processor(data_path, title_max_len, abstract_max_len, vocab_level, proc
         for line in f:
             line = line.capitalize()
             samples.append(str.encode(line[:-1]))
+
+    with tf.gfile.Open(dir_path + "/query.txt") as f:
+        for line in f:
+            line = line.capitalize()
+            prediction_titles.append(str.encode(line[:-1]))
+
+    # Also pad the prediction abstracts with dummy abstracts
+    prediction_abstracts = ['stem cell'] * len(prediction_titles)
 
     if not tf.gfile.Exists(processed_path + "/stem_cell.subwords"):
         print("Vocab file does not exist, making a new one.")
@@ -100,6 +109,7 @@ def text_processor(data_path, title_max_len, abstract_max_len, vocab_level, proc
 
     write_tfrecords(titles[:-9000], abstracts[:-9000], "training")
     write_tfrecords(titles[-9000:], abstracts[-9000:], "testing")
+    write_tfrecords(prediction_titles + titles, prediction_abstracts + abstracts, "prediction")
 
     # # Get the distribution on the length of each fact in tokens
     # print("abstract_lengths: ")
