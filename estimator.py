@@ -195,6 +195,25 @@ def main(argv=None):
                                                         predict_batch_size=8, use_tpu=True,
                                                         params={'vocab_size': vocab_size}, config=config)
 
+    def get_predictions(input_fu):
+        results = estimator.predict(input_fn=input_fu, predict_keys=['encoded_title', 'original_title',
+                                                                          'encoded_abstract', 'original_abstract'])
+
+        original_titles = []
+        original_abstracts = []
+        encoded_titles = []
+        encoded_abstracts = []
+
+        for i, result in enumerate(results):
+            input_title = result['original_title']
+            original_titles.append(tokenizer.decode([j for j in input_title if j < tokenizer.vocab_size]))
+            input_abstract = result['original_abstract']
+            original_abstracts.append(tokenizer.decode([j for j in input_abstract if j < tokenizer.vocab_size]))
+            encoded_titles.append(result['encoded_title'])
+            encoded_abstracts.append(result['encoded_abstract'])
+
+        return original_titles, original_abstracts, encoded_titles, encoded_abstracts
+
     train_input_fn = file_based_input_fn_builder(
         input_file="training",
         batch_size=FLAGS.batch_size,
@@ -207,8 +226,14 @@ def main(argv=None):
         is_training=False,
         drop_remainder=True)
 
-    pred_input_fn = file_based_input_fn_builder(
-        input_file="prediction",
+    database_input_fn = file_based_input_fn_builder(
+        input_file="original",
+        batch_size=8,
+        is_training=False,
+        drop_remainder=True)
+
+    query_input_fn = file_based_input_fn_builder(
+        input_file="query",
         batch_size=8,
         is_training=False,
         drop_remainder=True)
@@ -219,67 +244,14 @@ def main(argv=None):
         print("***************************************")
 
         estimator.train(input_fn=train_input_fn, max_steps=FLAGS.train_steps)
-        estimator.evaluate(input_fn=eval_input_fn, steps=1100)
+        estimator.evaluate(input_fn=eval_input_fn, steps=1200)
 
     if FLAGS.predict:
         print("***************************************")
         print("Predicting")
         print("***************************************")
 
-        results = estimator.predict(input_fn=pred_input_fn, predict_keys=['encoded_title', 'original_title',
-                                                                                   'encoded_abstract', 'original_abstract'])
-
-        original_titles = []
-        original_abstracts = []
-        encoded_titles = []
-        encoded_abstracts = []
-
-        for i, result in enumerate(results):
-            if i % 100 == 0:
-                print("Predicted " + str(i) + " samples")
-            input_title = result['original_title']
-            original_titles.append(tokenizer.decode([i for i in input_title if i < tokenizer.vocab_size]))
-            input_abstract = result['original_abstract']
-            original_abstracts.append(tokenizer.decode([i for i in input_abstract if i < tokenizer.vocab_size]))
-            encoded_titles.append(result['encoded_title'])
-            encoded_abstracts.append(result['encoded_abstract'])
-
-            if i + 1 == FLAGS.predict_samples:
-                break
-
-        for k in range(20):
-            print("************************************************")
-            print("Sample title: " + original_titles[k])
-            print("Sample abstract: " + original_abstracts[k])
-            print("Difference: " + str(np.mean(np.abs(encoded_abstracts[k] - encoded_titles[k]))))
-
-            differences = []
-
-            for title in encoded_titles:
-                difference = np.mean(np.abs(title - encoded_titles[k]))
-                differences.append(difference)
-
-            sorted_index = np.argsort(differences)
-
-            for i in range(len(sorted_index)):
-                if sorted_index[i] == k:
-                    print("Original title ranking: " + str(i))
-
-            print("Most similar title ranking")
-
-            for i in range(10):
-                index = sorted_index[i]
-                print(str(i) + ": " + original_titles[index])
-                print("Difference: " + str(differences[index]))
-
-            print("Least similar title ranking")
-
-            length = len(sorted_index) - 1
-
-            for i in range(10):
-                index = sorted_index[length-i]
-                print(str(i) + ": " + original_titles[index])
-                print("Difference: " + str(differences[index]))
+        original_titles, original_abstracts, encoded_titles, encoded_abstracts = get_predictions(eval_input_fn)
 
         # Calculates the overall score for how often the correct title ranks first
         ranking_count = 0
@@ -293,7 +265,55 @@ def main(argv=None):
                 if index == i:
                     ranking_count += j
 
-        print("Overall first place ranking: " + str(ranking_count/len(encoded_abstracts)))
+        print("Overall first place ranking: " + str(ranking_count / len(encoded_abstracts)))
+
+        # Calculates the overall score for how often similar titles rank first
+        abstract_id = []
+        for i in range(len(encoded_abstracts)):
+            if i > 0 and original_abstracts[i] == original_abstracts[i - 1]:
+                abstract_id.append(abstract_id[i - 1])
+            else:
+                abstract_id.append(i)
+
+        ranking_count = 0
+        for i, title in enumerate(encoded_titles):
+            search_differences = []
+            for other_title in encoded_titles:
+                difference = np.mean(np.abs(other_title - title))
+                search_differences.append(difference)
+            sorted_index = np.argsort(search_differences)
+            for j, index in enumerate(sorted_index):
+                if index == abstract_id[i]:
+                    ranking_count += j
+
+        print("Overall similar title first place ranking: " + str(ranking_count / len(encoded_abstracts)))
+
+
+        print("***************************************")
+        print("Querying")
+        print("***************************************")
+
+        original_titles, _, encoded_titles, __ = get_predictions(database_input_fn)
+        queries, _, encoded_queries, __ = get_predictions(query_input_fn)
+
+        for k in range(10):
+            print("************************************************")
+            print("Sample query: " + queries[k])
+
+            differences = []
+
+            for title in encoded_titles:
+                difference = np.mean(np.abs(title - encoded_queries[k]))
+                differences.append(difference)
+
+            sorted_index = np.argsort(differences)
+
+            print("Most similar title ranking")
+
+            for i in range(10):
+                index = sorted_index[i]
+                print(str(i) + ": " + original_titles[index])
+                print("Difference: " + str(differences[index]))
 
 
 if __name__ == '__main__':

@@ -4,7 +4,7 @@ REGION=us-central1
 DATA_DIR=gs://neuralsearch/raw_data
 OUTPUT_PATH=gs://neuralsearch/model
 ENCODED_DATA=gs://neuralsearch/encoded_data
-PACKAGE=gs://neuralsearch/tensorflow-datasets-3.1.0.tar.gz
+PACKAGE=gs://neuralsearch/tensorflow-datasets-3.1.0.tar.gz,gs://neuralsearch/nltk-3.5.zip
 
 gcloud ai-platform jobs submit training $JOB_NAME \
     --staging-bucket $STAGING_BUCKET \
