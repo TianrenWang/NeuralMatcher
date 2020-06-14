@@ -206,7 +206,7 @@ def main(argv=None):
             encoded_papers.append(result['encoded_paper'])
             encoded_queries.append(result['encoded_query'])
 
-        return original_titles, original_queries, encoded_papers, encoded_queries
+        return original_titles, original_queries, encoded_queries, encoded_papers
 
     train_input_fn = file_based_input_fn_builder(
         input_file="training",
@@ -238,57 +238,16 @@ def main(argv=None):
         print("***************************************")
 
         estimator.train(input_fn=train_input_fn, max_steps=FLAGS.train_steps)
-        estimator.evaluate(input_fn=eval_input_fn, steps=1200)
+        estimator.evaluate(input_fn=eval_input_fn, steps=100)
 
     if FLAGS.predict:
-        print("***************************************")
-        print("Predicting")
-        print("***************************************")
-
-        original_titles, original_abstracts, encoded_titles, encoded_abstracts = get_predictions(eval_input_fn)
-
-        # Calculates the overall score for how often the correct title ranks first
-        ranking_count = 0
-        for i, title in enumerate(encoded_titles):
-            search_differences = []
-            for abstract in encoded_abstracts:
-                difference = np.mean(np.abs(abstract - title))
-                search_differences.append(difference)
-            sorted_index = np.argsort(search_differences)
-            for j, index in enumerate(sorted_index):
-                if index == i:
-                    ranking_count += j
-
-        print("Overall first place ranking: " + str(ranking_count / len(encoded_abstracts)))
-
-        # Calculates the overall score for how often similar titles rank first
-        abstract_id = []
-        for i in range(len(encoded_abstracts)):
-            if i > 0 and original_abstracts[i] == original_abstracts[i - 1]:
-                abstract_id.append(abstract_id[i - 1])
-            else:
-                abstract_id.append(i)
-
-        ranking_count = 0
-        for i, title in enumerate(encoded_titles):
-            search_differences = []
-            for other_title in encoded_titles:
-                difference = np.mean(np.abs(other_title - title))
-                search_differences.append(difference)
-            sorted_index = np.argsort(search_differences)
-            for j, index in enumerate(sorted_index):
-                if index == abstract_id[i]:
-                    ranking_count += j
-
-        print("Overall similar title first place ranking: " + str(ranking_count / len(encoded_abstracts)))
-
 
         print("***************************************")
         print("Querying")
         print("***************************************")
 
-        original_titles, _, encoded_titles, __ = get_predictions(database_input_fn)
-        queries, _, encoded_queries, __ = get_predictions(query_input_fn)
+        original_titles, _, __, encoded_papers = get_predictions(database_input_fn)
+        _, queries, encoded_queries, __ = get_predictions(query_input_fn)
 
         for k in range(10):
             print("************************************************")
@@ -296,8 +255,8 @@ def main(argv=None):
 
             differences = []
 
-            for title in encoded_titles:
-                difference = np.mean(np.abs(title - encoded_queries[k]))
+            for paper in encoded_papers:
+                difference = np.mean(np.abs(paper - encoded_queries[k]))
                 differences.append(difference)
 
             sorted_index = np.argsort(differences)
@@ -308,6 +267,26 @@ def main(argv=None):
                 index = sorted_index[i]
                 print(str(i) + ": " + original_titles[index])
                 print("Difference: " + str(differences[index]))
+
+        print("***************************************")
+        print("Evaluation")
+        print("***************************************")
+
+        original_titles, original_queries, encoded_queries, encoded_papers = get_predictions(eval_input_fn)
+
+        # Calculates the overall score for how often the correct title ranks first
+        ranking_count = 0
+        for i, query in enumerate(encoded_queries):
+            search_differences = []
+            for paper in encoded_papers:
+                difference = np.mean(np.abs(paper - query))
+                search_differences.append(difference)
+            sorted_index = np.argsort(search_differences)
+            for j, index in enumerate(sorted_index):
+                if index == i:
+                    ranking_count += j
+
+        print("Overall first place ranking: " + str(ranking_count / len(encoded_papers)))
 
 
 if __name__ == '__main__':

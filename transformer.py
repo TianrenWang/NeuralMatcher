@@ -333,8 +333,7 @@ class DecoderLayer(tf.keras.layers.Layer):
 
 
 class Encoder(tf.keras.layers.Layer):
-    def __init__(self, num_layers, d_model, num_heads, dff, input_vocab_size,
-                 embedding, rate=0.1):
+    def __init__(self, num_layers, d_model, num_heads, dff, rate=0.1):
         super(Encoder, self).__init__()
 
         self.d_model = d_model
@@ -402,11 +401,10 @@ def create_masks(inp, tar):
 
 
 class Transformer(tf.keras.Model):
-    def __init__(self, num_layers, d_model, num_heads, dff, vocab_size, rate=0.1):
+    def __init__(self, num_layers, d_model, num_heads, dff, rate=0.1):
         super(Transformer, self).__init__()
 
-        self.encoder = Encoder(num_layers, d_model, num_heads, dff,
-                               vocab_size, self.embedding, rate)
+        self.encoder = Encoder(num_layers, d_model, num_heads, dff, rate)
 
         # self.decoder = Decoder(num_layers, d_model, num_heads, dff,
         #                        vocab_size, self.embedding, rate)
@@ -443,15 +441,15 @@ def neural_search_matcher(vocab_size, FLAGS):
         title_padding_mask = create_padding_mask(titles)
         abstract_padding_mask = create_padding_mask(abstracts)
 
-        embedding = tf.keras.layers.Embedding(vocab_size, FLAGS.d_model)
-        pos_encoding = positional_encoding(vocab_size, FLAGS.d_model)
+        embedding = tf.keras.layers.Embedding(vocab_size, FLAGS.depth)
+        pos_encoding = positional_encoding(vocab_size, FLAGS.depth)
         normalizer = tf.keras.layers.LayerNormalization(epsilon=1e-6)
 
-        queries = process_input(queries, embedding, pos_encoding, FLAGS.d_model)
-        titles = process_input(titles, embedding, pos_encoding, FLAGS.d_model)
-        abstracts = process_input(abstracts, embedding, pos_encoding, FLAGS.d_model)
+        queries = process_input(queries, embedding, pos_encoding, FLAGS.depth)
+        titles = process_input(titles, embedding, pos_encoding, FLAGS.depth)
+        abstracts = process_input(abstracts, embedding, pos_encoding, FLAGS.depth)
 
-        encoder = Transformer(FLAGS.layers, FLAGS.depth, FLAGS.heads, FLAGS.feedforward, vocab_size, FLAGS.dropout)
+        encoder = Transformer(FLAGS.layers, FLAGS.depth, FLAGS.heads, FLAGS.feedforward, FLAGS.dropout)
         decoder = Decoder(2, FLAGS.depth, FLAGS.heads, FLAGS.feedforward, FLAGS.dropout)
 
         encoded_abstract = encoder(abstracts, is_training, abstract_padding_mask)
