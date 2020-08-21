@@ -6,14 +6,16 @@ from __future__ import print_function
 import tensorflow as tf
 import numpy as np
 
-import transformer
-import text_processor
+from . import transformer
+from . import text_processor
 
 flags = tf.compat.v1.flags
 
 # Configuration
 flags.DEFINE_string("data_dir", default="data/",
       help="data directory")
+flags.DEFINE_string("data_name", default="raw_data",
+      help="the name of the data")
 flags.DEFINE_string("model_dir", default="model/",
       help="directory of model")
 flags.DEFINE_string("encoded_data_dir", default="encoded_data/",
@@ -61,32 +63,20 @@ encoderLayerNames = ['encoder_layer{}'.format(i + 1) for i in range(FLAGS.layers
 def model_fn(features, labels, mode, params):
     abstracts = tf.cast(features["abstracts"], tf.int32)
     titles = tf.cast(features["titles"], tf.int32)
+    queries = tf.cast(features["queries"], tf.int32)
     vocab_size = params['vocab_size'] + 2
 
-    network = transformer.TED_generator(vocab_size, FLAGS)
+    matching_transformer = transformer.neural_search_matcher(vocab_size, FLAGS)
 
-    abstract_encoder_out = network(abstracts, mode == tf.estimator.ModeKeys.TRAIN)
-    title_encoder_out = network(titles, mode == tf.estimator.ModeKeys.TRAIN)
-
-    matching_layer = tf.keras.Sequential([
-            tf.keras.layers.Dropout(FLAGS.dropout),
-            tf.keras.layers.Dense(FLAGS.depth, activation='relu'),
-            tf.keras.layers.LayerNormalization(epsilon=1e-6),
-            tf.keras.layers.Dropout(FLAGS.dropout),
-            tf.keras.layers.Dense(FLAGS.depth, activation='relu'),
-            tf.keras.layers.LayerNormalization(epsilon=1e-6)
-        ])
-
-    abstract_match = matching_layer(abstract_encoder_out)
-    title_match = matching_layer(title_encoder_out)
+    query_match, paper_match = matching_transformer(queries, titles, abstracts, mode == tf.estimator.ModeKeys.TRAIN)
 
     def lm_loss_function(real, pred):
-        mask = tf.math.logical_not(tf.math.equal(real, 0))  # Every element that is NOT padded
+        # mask = tf.math.logical_not(tf.math.equal(real, 0))  # Every element that is NOT padded
         # They will have to deal with run on sentences with this kind of setup
         loss_ = tf.keras.losses.sparse_categorical_crossentropy(real, pred, from_logits=True)
 
-        mask = tf.cast(mask, dtype=loss_.dtype)
-        loss_ *= mask
+        # mask = tf.cast(mask, dtype=loss_.dtype)
+        # loss_ *= mask
 
         return tf.reduce_mean(loss_)
 
@@ -94,33 +84,37 @@ def model_fn(features, labels, mode, params):
     # abstract_loss = lm_loss_function(tf.slice(abstracts, [0, 1], [-1, -1]), abstract_logits)
     # title_loss = lm_loss_function(tf.slice(titles, [0, 1], [-1, -1]), title_logits)
 
-    matched_difference = tf.reduce_mean(tf.abs(abstract_match - title_match), -1)
+    matched_difference = tf.reduce_mean(tf.abs(paper_match - query_match), -1)
     matched_difference_loss = tf.reduce_mean(matched_difference)
 
-    shifted_abstract = tf.roll(abstract_match, 1, 0)
+    batch_size = tf.shape(paper_match)[0]
+    duplicated_abstract = tf.tile(tf.expand_dims(paper_match, 0), [batch_size, 1, 1])
+    all_differences = tf.reduce_mean(tf.abs(duplicated_abstract - tf.expand_dims(query_match, 1)), -1)
+    all_differences = all_differences * (1 - tf.linalg.diag(tf.ones([batch_size]) * -100000))
 
-    negative_match_difference = 1 / tf.reduce_mean(tf.abs(shifted_abstract - title_match), -1)
+    negative_match_difference = 0.01 / all_differences
     negative_matched_difference_loss = tf.reduce_mean(negative_match_difference)
 
     loss = matched_difference_loss + negative_matched_difference_loss
 
     predictions = {
         'original_title': titles,
-        'original_abstract': abstracts,
-        'encoded_title': title_match,
-        'encoded_abstract': abstract_match
+        'original_query': queries,
+        'encoded_paper': paper_match,
+        'encoded_query': query_match
     }
 
     if mode == tf.estimator.ModeKeys.PREDICT:
         export_outputs = {
             SIGNATURE_NAME: tf.estimator.export.PredictOutput(predictions)
         }
-        return tf.estimator.EstimatorSpec(mode=mode, predictions=predictions, export_outputs=export_outputs)
+        return tf.compat.v1.estimator.tpu.TPUEstimatorSpec(mode=mode, predictions=predictions, export_outputs=export_outputs)
 
     if mode == tf.estimator.ModeKeys.TRAIN:
         global_step = tf.compat.v1.train.get_or_create_global_step()
 
         optimizer = tf.compat.v1.train.AdamOptimizer(learning_rate=1e-5, beta2=0.98, epsilon=1e-9)
+        optimizer = tf.compat.v1.tpu.CrossShardOptimizer(optimizer)
 
         # Batch norm requires update ops to be added as a dependency to the train_op
         update_ops = tf.compat.v1.get_collection(tf.compat.v1.GraphKeys.UPDATE_OPS)
@@ -129,7 +123,7 @@ def model_fn(features, labels, mode, params):
     else:
         train_op = None
 
-    return tf.estimator.EstimatorSpec(
+    return tf.compat.v1.estimator.tpu.TPUEstimatorSpec(
         mode=mode,
         predictions=predictions,
         loss=loss,
@@ -139,7 +133,8 @@ def file_based_input_fn_builder(input_file, batch_size, is_training, drop_remain
 
     name_to_features = {
         "abstracts": tf.io.FixedLenFeature([FLAGS.abstract_len], tf.int64),
-        "titles": tf.io.FixedLenFeature([FLAGS.title_len], tf.int64)
+        "titles": tf.io.FixedLenFeature([FLAGS.title_len], tf.int64),
+        "queries": tf.io.FixedLenFeature([FLAGS.title_len], tf.int64)
     }
 
     def _decode_record(record, name_to_features):
@@ -161,7 +156,7 @@ def file_based_input_fn_builder(input_file, batch_size, is_training, drop_remain
 
         # For training, we want a lot of parallel reading and shuffling.
         # For eval, we want no shuffling and parallel reading doesn't matter.
-        d = tf.data.TFRecordDataset("encoded_data/" + input_file + ".tfrecords")
+        d = tf.data.TFRecordDataset(FLAGS.encoded_data_dir + "/" + input_file + ".tfrecords")
         if is_training:
             d = d.shuffle(buffer_size=1024)
             d = d.repeat()
@@ -180,24 +175,60 @@ def main(argv=None):
         if i > 18:
             print(key + ": " + str(flags[key]))
 
-    mirrored_strategy = tf.distribute.MirroredStrategy()
-    config = tf.estimator.RunConfig(
-        train_distribute=mirrored_strategy, eval_distribute=mirrored_strategy, save_checkpoints_steps=10000)
+    tpu_cluster_resolver = tf.distribute.cluster_resolver.TPUClusterResolver()
+    tpu_config = tf.compat.v1.estimator.tpu.TPUConfig(
+        per_host_input_for_training=tf.compat.v1.estimator.tpu.InputPipelineConfig.BROADCAST)
 
-    vocab_size, tokenizer = text_processor.text_processor(FLAGS.data_dir, FLAGS.title_len, FLAGS.abstract_len, FLAGS.vocab_level, "encoded_data")
+    config = tf.compat.v1.estimator.tpu.RunConfig(cluster=tpu_cluster_resolver, tpu_config=tpu_config)
 
-    estimator = tf.estimator.Estimator(model_fn=model_fn, model_dir=FLAGS.model_dir,
-                                       params={'vocab_size': vocab_size}, config=config)
+    vocab_size, tokenizer = text_processor.text_processor(FLAGS.data_dir, FLAGS.data_name, FLAGS.title_len,
+                                                          FLAGS.abstract_len, FLAGS.vocab_level, FLAGS.encoded_data_dir)
 
-    language_train_input_fn = file_based_input_fn_builder(
+    estimator = tf.compat.v1.estimator.tpu.TPUEstimator(model_fn=model_fn, model_dir=FLAGS.model_dir,
+                                                        train_batch_size=FLAGS.batch_size, eval_batch_size=8,
+                                                        predict_batch_size=8, use_tpu=True,
+                                                        params={'vocab_size': vocab_size}, config=config)
+
+    def get_predictions(input_fu):
+        results = estimator.predict(input_fn=input_fu, predict_keys=['encoded_paper', 'original_title',
+                                                                          'encoded_query', 'original_query'])
+
+        original_titles = []
+        original_queries = []
+        encoded_papers = []
+        encoded_queries = []
+
+        for i, result in enumerate(results):
+            input_title = result['original_title']
+            original_titles.append(tokenizer.decode([j for j in input_title if j < tokenizer.vocab_size]))
+            input_query = result['original_query']
+            original_queries.append(tokenizer.decode([j for j in input_query if j < tokenizer.vocab_size]))
+            encoded_papers.append(result['encoded_paper'])
+            encoded_queries.append(result['encoded_query'])
+
+        return original_titles, original_queries, encoded_queries, encoded_papers
+
+    train_input_fn = file_based_input_fn_builder(
         input_file="training",
         batch_size=FLAGS.batch_size,
         is_training=True,
         drop_remainder=True)
 
-    language_eval_input_fn = file_based_input_fn_builder(
+    eval_input_fn = file_based_input_fn_builder(
         input_file="testing",
-        batch_size=1,
+        batch_size=8,
+        is_training=False,
+        drop_remainder=True)
+
+    database_input_fn = file_based_input_fn_builder(
+        input_file="original",
+        batch_size=8,
+        is_training=False,
+        drop_remainder=True)
+
+    query_input_fn = file_based_input_fn_builder(
+        input_file="query",
+        batch_size=8,
         is_training=False,
         drop_remainder=True)
 
@@ -206,59 +237,56 @@ def main(argv=None):
         print("Training")
         print("***************************************")
 
-        trainspec = tf.estimator.TrainSpec(
-            input_fn=language_train_input_fn,
-            max_steps=FLAGS.train_steps)
-
-        evalspec = tf.estimator.EvalSpec(
-            input_fn=language_eval_input_fn,
-            throttle_secs=7200)
-
-        tf.estimator.train_and_evaluate(estimator, trainspec, evalspec)
+        estimator.train(input_fn=train_input_fn, max_steps=FLAGS.train_steps)
+        estimator.evaluate(input_fn=eval_input_fn, steps=100)
 
     if FLAGS.predict:
+
         print("***************************************")
-        print("Predicting")
+        print("Querying")
         print("***************************************")
 
-        results = estimator.predict(input_fn=language_eval_input_fn, predict_keys=['encoded_title', 'original_title',
-                                                                                   'encoded_abstract', 'original_abstract'])
+        original_titles, _, __, encoded_papers = get_predictions(database_input_fn)
+        _, queries, encoded_queries, __ = get_predictions(query_input_fn)
 
-        original_titles = []
-        original_abstracts = []
-        encoded_titles = []
-        encoded_abstracts = []
+        for k in range(10):
+            print("************************************************")
+            print("Sample query: " + queries[k])
 
-        for i, result in enumerate(results):
-            if i % 100 == 0:
-                print("Predicted " + str(i) + " samples")
-            input_title = result['original_title']
-            original_titles.append(tokenizer.decode([i for i in input_title if i < tokenizer.vocab_size]))
-            input_abstract = result['original_abstract']
-            original_abstracts.append(tokenizer.decode([i for i in input_abstract if i < tokenizer.vocab_size]))
-            encoded_titles.append(result['encoded_title'])
-            encoded_abstracts.append(result['encoded_abstract'])
+            differences = []
 
-            if i + 1 == FLAGS.predict_samples:
-                break
+            for paper in encoded_papers:
+                difference = np.mean(np.abs(paper - encoded_queries[k]))
+                differences.append(difference)
 
-        print("Sample title: " + original_titles[0])
-        print("Sample abstract: " + original_abstracts[0])
+            sorted_index = np.argsort(differences)
 
-        differences = []
+            print("Most similar title ranking")
 
-        for title in encoded_titles:
-            difference = np.sum(np.abs(encoded_abstracts[0] - title))
-            differences.append(difference)
+            for i in range(10):
+                index = sorted_index[i]
+                print(str(i) + ": " + original_titles[index])
+                print("Difference: " + str(differences[index]))
 
-        sorted_index = np.argsort(differences)
+        print("***************************************")
+        print("Evaluation")
+        print("***************************************")
 
-        print("Similar title ranking")
+        original_titles, original_queries, encoded_queries, encoded_papers = get_predictions(eval_input_fn)
 
-        for i in range(10):
-            index = sorted_index[i]
-            print(str(index) + ": " + original_titles[index])
-            print("Difference: " + str(differences[index]))
+        # Calculates the overall score for how often the correct title ranks first
+        ranking_count = 0
+        for i, query in enumerate(encoded_queries):
+            search_differences = []
+            for paper in encoded_papers:
+                difference = np.mean(np.abs(paper - query))
+                search_differences.append(difference)
+            sorted_index = np.argsort(search_differences)
+            for j, index in enumerate(sorted_index):
+                if index == i:
+                    ranking_count += j
+
+        print("Overall first place ranking: " + str(ranking_count / len(encoded_papers)))
 
 
 if __name__ == '__main__':

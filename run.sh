@@ -9,6 +9,8 @@
 python3 estimator.py \
   --data_dir=data/ \
   --model_dir=model/ \
+  --encoded_data_dir=encoded_data/ \
+  --data_name=raw_data \
   --train_steps=100000 \
   --vocab_level=15 \
   --dropout=0.1 \

@@ -2,38 +2,48 @@ import numpy as np
 import tensorflow_datasets as tfds
 import tensorflow as tf
 from sklearn.utils import shuffle
-import os
+import nltk
+from nltk.tokenize.treebank import TreebankWordDetokenizer
+import random
 
+keep_words = ['NNS', 'NN', 'NNP', 'NNPS', 'CC', 'IN']
+nltk.download('punkt')
+nltk.download('averaged_perceptron_tagger')
 
 def create_int_feature(values):
     f = tf.train.Feature(int64_list=tf.train.Int64List(value=list(values)))
     return f
 
 
-def text_processor(data_path, title_max_len, abstract_max_len, vocab_level, processed_path):
+def text_processor(data_path, data_name, title_max_len, abstract_max_len, vocab_level, processed_path):
     samples = []
     dir_path = data_path
+    queries = []
 
-    def accumulate_samples(sample_list, filename):
-        data = open(dir_path + filename, "r")
-        line = data.readline().capitalize()
+    if not tf.gfile.Exists(processed_path):
+        tf.gfile.MakeDirs(processed_path)
 
-        while line:
-            sample_list.append(str.encode(line[:-1]))
-            line = data.readline()
+    with tf.gfile.Open(dir_path + "/" + data_name + ".txt") as f:
+        for line in f:
+            line = line.lower()
+            samples.append(str.encode(line[:-1]))
 
-        data.close()
+    with tf.gfile.Open(dir_path + "/" + data_name + "_query.txt") as f:
+        for line in f:
+            line = line.lower()
+            queries.append(str.encode(line[:-1]))
 
-    accumulate_samples(samples, "stem_cell.txt")
+    # Also pad the prediction titles and abstracts with dummies
+    dummy_abstracts = [data_name] * len(queries)
+    dummy_titles = [data_name] * len(queries)
 
-    if not os.path.exists(processed_path + "/stem_cell.subwords"):
+    if not tf.gfile.Exists(processed_path + "/" + data_name + ".subwords"):
         print("Vocab file does not exist, making a new one.")
         tokenizer = get_tokenizer(samples, vocab_level)
-        os.mkdir(processed_path)
-        tokenizer.save_to_file(processed_path + "/stem_cell")
+        tokenizer.save_to_file(processed_path + "/" + data_name)
     else:
         print("Found an existing vocab file, using this one.")
-        tokenizer = tfds.features.text.SubwordTextEncoder.load_from_file(processed_path + "/stem_cell")
+        tokenizer = tfds.features.text.SubwordTextEncoder.load_from_file(processed_path + "/" + data_name)
 
     vocab_size = tokenizer.vocab_size + 2
 
@@ -49,7 +59,24 @@ def text_processor(data_path, title_max_len, abstract_max_len, vocab_level, proc
         currentIndex += 1
 
     abstracts = samples
+
     abstracts, titles = shuffle(abstracts, titles)
+    dummy_queries = ["dummy query"] * len(abstracts)
+
+    augmented_queries = []
+    augmented_abstracts = []
+    augmented_titles = []
+
+    # Augment the data
+    for i in range(len(titles)):
+        new_queries = get_simpler_titles(titles[i])
+        new_abstracts = [abstracts[i]] * len(new_queries)
+        new_titles = [titles[i]] * len(new_queries)
+        augmented_queries += new_queries
+        augmented_abstracts += new_abstracts
+        augmented_titles += new_titles
+
+    train_abstracts, train_titles, train_queries = shuffle(augmented_abstracts[:-10000], augmented_titles[:-10000], augmented_queries[:-10000])
 
     def encode(sample):
         """Turns an abstract in English into BPE (Byte Pair Encoding).
@@ -66,22 +93,20 @@ def text_processor(data_path, title_max_len, abstract_max_len, vocab_level, proc
     # abstract_lengths = [0] * 1000
     # title_lengths = [0] * 200
 
-    if not os.path.exists(processed_path):
-        os.makedirs(processed_path)
-
-    def write_tfrecords(titles, abstracts, data_name):
+    def write_tfrecords(titles, abstracts, queries, data_name):
         full_path = processed_path + "/" + data_name + ".tfrecords"
-        if not os.path.exists(full_path):
+        if not tf.gfile.Exists(full_path):
 
             writer = tf.io.TFRecordWriter(full_path)
             counter = 0
 
-            for title, abstract in zip(titles, abstracts):
+            for title, abstract, query in zip(titles, abstracts, queries):
                 if counter % 1000 == 0:
                     print("Number of examples written to tfrecord: " + str(counter))
                 counter += 1
                 encoded_title = encode(title)
                 encoded_abstract = encode(abstract)
+                encoded_query = encode(query)
 
                 if len(encoded_abstract) <= abstract_max_len and len(encoded_title) <= title_max_len:
                     # abstract_lengths[len(encoded_abstract)] += 1
@@ -97,17 +122,25 @@ def text_processor(data_path, title_max_len, abstract_max_len, vocab_level, proc
                     if padding >= 0:
                         abstract_feature = np.pad(encoded_abstract, (0, padding), 'constant')
 
+                    query_length = len(encoded_query)
+                    padding = title_max_len - query_length
+                    if padding >= 0:
+                        query_feature = np.pad(encoded_query, (0, padding), 'constant')
+
                     example = {}
                     example["abstracts"] = create_int_feature(abstract_feature)
                     example["titles"] = create_int_feature(title_feature)
+                    example["queries"] = create_int_feature(query_feature)
 
                     tf_example = tf.train.Example(features=tf.train.Features(feature=example))
                     writer.write(tf_example.SerializeToString())
 
             writer.close()
 
-    write_tfrecords(titles[:-9000], abstracts[:-9000], "training")
-    write_tfrecords(titles[-9000:], abstracts[-9000:], "testing")
+    write_tfrecords(train_titles, train_abstracts, train_queries, "training")
+    write_tfrecords(augmented_titles[-10000:], augmented_abstracts[-10000:], augmented_queries[-10000:], "testing")
+    write_tfrecords(titles, abstracts, dummy_queries, "original")
+    write_tfrecords(dummy_titles, dummy_abstracts, queries, "query")
 
     # # Get the distribution on the length of each fact in tokens
     # print("abstract_lengths: ")
@@ -128,3 +161,21 @@ def get_tokenizer(texts, vocab_level):
 
     return tfds.features.text.SubwordTextEncoder.build_from_corpus(
         texts, target_vocab_size=input_vocab_size)
+
+def get_simpler_titles(title):
+    tokens = nltk.word_tokenize(title.decode())
+    tagged_tokens = nltk.pos_tag(tokens)
+    non_noun_tokens = [i for i in range(len(tagged_tokens)) if tagged_tokens[i][1] not in keep_words]
+    pop_list = []
+    pop_list.append([i for i in non_noun_tokens if random.random() > 0.2])
+    pop_list.append([i for i in non_noun_tokens if random.random() > 0.5])
+    pop_list.append([i for i in non_noun_tokens if random.random() > 0.8])
+
+    new_titles = [title]
+
+    for pop in pop_list:
+        new_title = TreebankWordDetokenizer().detokenize([tokens[i] for i in range(len(tokens)) if i not in pop])
+        if new_title not in new_titles and new_title != title:
+            new_titles.append(str.encode(new_title))
+
+    return new_titles
