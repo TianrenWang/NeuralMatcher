@@ -354,7 +354,6 @@ class Encoder(tf.keras.layers.Layer):
 
         return x # (batch_size, input_seq_len, d_model)
 
-
 class Decoder(tf.keras.layers.Layer):
     def __init__(self, num_layers, d_model, num_heads, dff, rate=0.1):
         super(Decoder, self).__init__()
