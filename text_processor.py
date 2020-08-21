@@ -15,11 +15,10 @@ def create_int_feature(values):
     return f
 
 
-def text_processor(data_path, title_max_len, abstract_max_len, vocab_level, processed_path):
-    data_name = "raw_data"
+def text_processor(data_path, data_name, title_max_len, abstract_max_len, vocab_level, processed_path):
     samples = []
     dir_path = data_path
-    prediction_titles = []
+    queries = []
 
     if not tf.gfile.Exists(processed_path):
         tf.gfile.MakeDirs(processed_path)
@@ -32,10 +31,11 @@ def text_processor(data_path, title_max_len, abstract_max_len, vocab_level, proc
     with tf.gfile.Open(dir_path + "/" + data_name + "_query.txt") as f:
         for line in f:
             line = line.lower()
-            prediction_titles.append(str.encode(line[:-1]))
+            queries.append(str.encode(line[:-1]))
 
-    # Also pad the prediction abstracts with dummy abstracts
-    prediction_abstracts = [data_name] * len(prediction_titles)
+    # Also pad the prediction titles and abstracts with dummies
+    dummy_abstracts = [data_name] * len(queries)
+    dummy_titles = [data_name] * len(queries)
 
     if not tf.gfile.Exists(processed_path + "/" + data_name + ".subwords"):
         print("Vocab file does not exist, making a new one.")
@@ -61,18 +61,22 @@ def text_processor(data_path, title_max_len, abstract_max_len, vocab_level, proc
     abstracts = samples
 
     abstracts, titles = shuffle(abstracts, titles)
+    dummy_queries = ["dummy query"] * len(abstracts)
 
-    augmented_titles = []
+    augmented_queries = []
     augmented_abstracts = []
+    augmented_titles = []
 
     # Augment the data
     for i in range(len(titles)):
-        new_titles = get_simpler_titles(titles[i])
-        new_abstracts = [abstracts[i]] * len(new_titles)
-        augmented_titles += new_titles
+        new_queries = get_simpler_titles(titles[i])
+        new_abstracts = [abstracts[i]] * len(new_queries)
+        new_titles = [titles[i]] * len(new_queries)
+        augmented_queries += new_queries
         augmented_abstracts += new_abstracts
+        augmented_titles += new_titles
 
-    train_abstracts, train_titles = shuffle(augmented_abstracts[:-10000], augmented_titles[:-10000])
+    train_abstracts, train_titles, train_queries = shuffle(augmented_abstracts[:-10000], augmented_titles[:-10000], augmented_queries[:-10000])
 
     def encode(sample):
         """Turns an abstract in English into BPE (Byte Pair Encoding).
@@ -89,19 +93,20 @@ def text_processor(data_path, title_max_len, abstract_max_len, vocab_level, proc
     # abstract_lengths = [0] * 1000
     # title_lengths = [0] * 200
 
-    def write_tfrecords(titles, abstracts, data_name):
+    def write_tfrecords(titles, abstracts, queries, data_name):
         full_path = processed_path + "/" + data_name + ".tfrecords"
         if not tf.gfile.Exists(full_path):
 
             writer = tf.io.TFRecordWriter(full_path)
             counter = 0
 
-            for title, abstract in zip(titles, abstracts):
+            for title, abstract, query in zip(titles, abstracts, queries):
                 if counter % 1000 == 0:
                     print("Number of examples written to tfrecord: " + str(counter))
                 counter += 1
                 encoded_title = encode(title)
                 encoded_abstract = encode(abstract)
+                encoded_query = encode(query)
 
                 if len(encoded_abstract) <= abstract_max_len and len(encoded_title) <= title_max_len:
                     # abstract_lengths[len(encoded_abstract)] += 1
@@ -117,19 +122,25 @@ def text_processor(data_path, title_max_len, abstract_max_len, vocab_level, proc
                     if padding >= 0:
                         abstract_feature = np.pad(encoded_abstract, (0, padding), 'constant')
 
+                    query_length = len(encoded_query)
+                    padding = title_max_len - query_length
+                    if padding >= 0:
+                        query_feature = np.pad(encoded_query, (0, padding), 'constant')
+
                     example = {}
                     example["abstracts"] = create_int_feature(abstract_feature)
                     example["titles"] = create_int_feature(title_feature)
+                    example["queries"] = create_int_feature(query_feature)
 
                     tf_example = tf.train.Example(features=tf.train.Features(feature=example))
                     writer.write(tf_example.SerializeToString())
 
             writer.close()
 
-    write_tfrecords(train_titles, train_abstracts, "training")
-    write_tfrecords(augmented_titles[-10000:], augmented_abstracts[-10000:], "testing")
-    write_tfrecords(titles, abstracts, "original")
-    write_tfrecords(prediction_titles, prediction_abstracts, "query")
+    write_tfrecords(train_titles, train_abstracts, train_queries, "training")
+    write_tfrecords(augmented_titles[-10000:], augmented_abstracts[-10000:], augmented_queries[-10000:], "testing")
+    write_tfrecords(titles, abstracts, dummy_queries, "original")
+    write_tfrecords(dummy_titles, dummy_abstracts, queries, "query")
 
     # # Get the distribution on the length of each fact in tokens
     # print("abstract_lengths: ")
