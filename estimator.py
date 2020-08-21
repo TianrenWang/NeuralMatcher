@@ -100,8 +100,8 @@ def model_fn(features, labels, mode, params):
     predictions = {
         'original_title': titles,
         'original_query': queries,
-        'encoded_paper': query_match,
-        'encoded_query': paper_match
+        'encoded_paper': paper_match,
+        'encoded_query': query_match
     }
 
     if mode == tf.estimator.ModeKeys.PREDICT:
